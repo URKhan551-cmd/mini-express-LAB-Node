@@ -16,3 +16,18 @@ Decide keep-alive or close, then either go back to HEAD (and process leftover by
 Protect yourself: header size limit, body limit, header timeout (slowloris), body timeout, idle timeout, max requests per connection.
 Handle FIN correctly (peer half-close) and write backpressure.
 Support draining for graceful shutdown (Step 5).
+
+
+manual-http-server/
+├── index.js
+├── constants.js
+├── errors.js
+├── server.js
+├── demo.js
+├── connection/
+│   └── connection.js
+└── http/
+    ├── parse-head.js
+    ├── read-body.js
+    ├── response.js
+    └── response-helpers.js

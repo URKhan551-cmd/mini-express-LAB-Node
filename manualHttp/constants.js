@@ -1,6 +1,6 @@
 'use strict';
 
-const net = require('net');
+// Responsibility: centralize HTTP reason phrases and default server limits.
 const reasons = {
     100: "Continue", 200: "OK", 201: "Created", 204: 'No Content',
     400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed",
@@ -20,4 +20,4 @@ const defaults = {
     maxRequestsPerConnection: 1000,
 };
 
-
+module.exports = {defaults, reasons};
