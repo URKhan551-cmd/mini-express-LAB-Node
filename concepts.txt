@@ -1,0 +1,44 @@
+A TCP connection is a pipe carrying an endless, ordered stream of bytes. 
+It knows nothing about requests.
+An HTTP request is a message with a clear beginning (request line) and 
+end (determined by Content-Length or chunked encoding).
+Because the end of every message is known, the next bytes on the pipe 
+can be the start of the next message. That is the entire reason one 
+TCP connection can carry many requests.
+A server therefore has two nested loops: an outer loop (accept connections) 
+and an inner loop (parse messages on each connection).
+
+Express, http, Fastify and every other framework are just different ways 
+of writing that inner loop for you.
+
+requests with bodies, the server knows where the body ends because of:
+
+Content-Length: N: read exactly N bytes, or
+Transfer-Encoding: chunked: read length-prefixed chunks until a zero-length chunk.
+
+After that, the next byte is the start of a new message. Responses use the same rules. 
+(A response with neither header ends only when the server closes the connection, which is the one case that prevents reuse.)
+
+Version	   Default	                      Behaviour
+HTTP/1.0	Close after each response	Connection: keep-alive opt-in
+HTTP/1.1	Persistent	                Connection: close opt-out; requests are sequential on a connection
+HTTP/1.1    pipelining		            Client sends several requests without waiting; server must answer in order. Rarely used (head-of-line blocking, buggy proxies)
+HTTP/2	  One connection per origin	Multiplexed    streams: many requests in flight at once, interleaved as frames
+HTTP/3	  One QUIC connection	        Multiplexed, no TCP head-of-line blocking
+
+
+On HTTP/1.1, a browser opens ~6 connections per host to get parallelism; each is reused sequentially.
+
+if i set the timeout for closing about 5 seconds that will be the flow.
+t=0     TCP+TLS handshake
+t=150   GET /index     --->  200 OK                 (conn idle)
+t=400   GET /api/me    --->  200 OK                 (same conn, no handshake)
+t=900   POST /api/save --->  201 Created            (same conn)
+...     (idle for keepAliveTimeout, e.g. 5 s)   after 5 seconds 
+t=5900  server sends FIN (idle timeout)             <- connection ends
+
+Who can end it: 
+the client (done, or its pool evicts idle sockets), 
+the server (idle timeout, max-requests limit, shutdown, errors), or 
+a middlebox (load balancer, NAT, firewall idle timeouts).
+

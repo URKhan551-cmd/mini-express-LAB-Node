@@ -1,0 +1,18 @@
+Handling HTTP manually on raw TCP
+
+This is the inner loop written by hand. It is intentionally close to what a real HTTP server 
+does internally. Understanding it makes every framework less magical.
+
+Design:
+Each TCP connection gets a Connection object with a buffer and a state machine:
+Key ideas:
+
+Accumulate bytes: a 'data' event is an arbitrary slice of the stream, not a message.
+Parse the head once \r\n\r\n appears. Validate strictly.
+Decide the body mode: none, Content-Length, or chunked.
+Dispatch to your async handler only when the whole message is ready, and stop parsing while it runs, which preserves response order.
+Serialize the response with an accurate Content-Length.
+Decide keep-alive or close, then either go back to HEAD (and process leftover bytes) or end the socket.
+Protect yourself: header size limit, body limit, header timeout (slowloris), body timeout, idle timeout, max requests per connection.
+Handle FIN correctly (peer half-close) and write backpressure.
+Support draining for graceful shutdown (Step 5).

@@ -1,0 +1,30 @@
+{
+  "name": "mini-express-lab-node",
+  "version": "1.0.0",
+  "description": "Implementation of Mini Express internals to get better understanding of raw TCP and Req handles.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/URKhan551-cmd/mini-express-LAB-Node.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/URKhan551-cmd/mini-express-LAB-Node/issues"
+  },
+  "homepage": "https://github.com/URKhan551-cmd/mini-express-LAB-Node#readme",
+  "dependencies": {
+    "compression": "^1.8.2",
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "pino": "^10.4.0",
+    "pino-http": "^11.0.0"
+  }
+}
