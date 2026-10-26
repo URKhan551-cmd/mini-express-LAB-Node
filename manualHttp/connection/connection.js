@@ -102,7 +102,7 @@ class Connection {
 
                 const end = this.buff.indexOf('\r\n\r\n');
 
-                if(end === 1){
+                if(end === -1){
                     if(this.buff.length > this.opts.maxHeaderBytes){
                         return this.fail(431, "Header Too large");
                     }
