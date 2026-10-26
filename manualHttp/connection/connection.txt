@@ -62,3 +62,52 @@ CLOSED	The connection is no longer accepting normal request processing
 
 
 The intended lifecycle is approximately:
+                     New connection
+                             |
+                             v
+                           HEAD
+                             |
+                    Complete headers
+                             |
+                             v
+                           BODY
+                             |
+                     Complete request
+                             |
+                             v
+                           BUSY
+                             |
+                     Response completed
+                             |
+                   +---------+---------+
+                   |                   |
+                   v                   v
+                 HEAD                CLOSED
+             Keep-alive          Close requested
+
+The transition from BUSY back to HEAD normally happens after the response has been completed, although that behavior depends on your respond module.
+The connection can also transition to CLOSED because of a parsing error, timeout, peer disconnect, socket closure, or server shutdown.
+Notice that HEAD does not mean the TCP connection has only received HTTP headers forever. It means the connection is currently in the phase of reading a new request's headers.
+Once the server finishes responding to a request, the same connection can return to HEAD and receive another request.
+That is how HTTP/1.1 persistent connections work.
+
+TCP connection #17
+
+Request 1:
+    GET /health
+    Response 1: 200 OK
+
+Request 2:
+    GET /api/weather?city=Sharjah
+    Response 2: 200 OK
+
+Request 3:
+    GET /favicon.ico
+    Response 3: 404 Not Found
+
+These requests can use the same TCP connection when keep-alive is permitted and the connection remains open.
+
+Your served counter tracks how many requests have been dispatched through that particular connection.
+
+This state machine is the foundation for understanding every method below.
+
