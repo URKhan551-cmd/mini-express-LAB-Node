@@ -1,0 +1,8 @@
+Your Connection class is a small HTTP server component that sits between a raw TCP socket and your HTTP request handler.
+
+TCP delivers bytes. HTTP gives meaning to those bytes. Your Connection class manages the process of turning those bytes 
+into HTTP requests, executing those requests, and returning HTTP responses over the same TCP connection.
+
+You are not simply writing a class that contains methods. You are implementing part of the machinery that a real HTTP server 
+needs to handle incoming clients, incomplete requests, timeouts, persistent connections, and errors. 
+Let's break it down from the architecture to the internal mechanics of every method.
