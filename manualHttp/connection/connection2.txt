@@ -1,0 +1,353 @@
+7. isIdle(): A small method with an important purpose
+isIdle() {
+    return this.state === "HEAD" &&
+           this.buff.length === 0;
+}
+
+This method returns a Boolean.
+
+It answers:
+Is the connection waiting for another request, with no buffered bytes waiting to be processed?
+
+For example:
+console.log(connection.isIdle());
+
+Possible results:
+true
+false
+
+Why not repeat the condition everywhere?
+Without a helper, other methods would need to repeat:
+this.state === "HEAD" &&
+this.buff.length === 0
+
+By placing that condition inside isIdle(), you give the condition a meaningful name.
+
+Then the code becomes:
+if (this.isIdle()) {
+    // Close an idle connection.
+}
+
+That is easier to understand.
+Why must the buffer be empty?
+Consider:
+state = HEAD
+buff = "GET /health HTTP/1.1..."
+
+The state is HEAD, but the connection is not truly idle because it has received bytes for a request.
+If you only checked the state, you might incorrectly classify an active request as an idle connection.
+The buffer check prevents that mistake.
+
+Where does this become useful?
+Your drain() method uses isIdle() during server shutdown.
+If the connection is idle, the server can close it immediately.
+If it is processing a request or has pending bytes, the server can defer closure until the response lifecycle allows it.
+That is a useful distinction for graceful shutdown.
+
+*******
+
+8. onData(chunk): Receiving raw TCP bytes
+This method is one of the central pieces of the class.
+onData(chunk) {
+    if (this.state === "CLOSED") return;
+
+    this.buff = this.buff.length
+        ? Buffer.concat([this.buff, chunk])
+        : chunk;
+
+    if (
+        this.state === "HEAD" ||
+        this.state === "BODY"
+    ) {
+        this.pump();
+    } else if (
+        this.buff.length >
+        this.opts.maxHeaderBytes +
+        this.opts.maxBodyBytes
+    ) {
+        this.socket.destroy();
+    }
+}
+
+Let's analyze it as a sequence of operations.
+  |
+  ^
+8.1 Ignore data after closure
+if (this.state === "CLOSED") return;
+
+Once the connection has entered CLOSED, normal request processing should not continue.
+
+This is a defensive check.
+
+Imagine the following sequence:
+Client sends data
+       |
+       v
+Server detects malformed request
+       |
+       v
+Connection enters CLOSED
+       |
+       v
+Another data callback is invoked
+The guard prevents the callback from continuing into normal processing.
+It does not itself close the socket. It simply stops this method from processing additional bytes.
+
+| 
+^
+8.2 Append incoming bytes
+this.buff = this.buff.length
+    ? Buffer.concat([this.buff, chunk])
+    : chunk;
+
+This is a compact conditional expression.
+
+It is equivalent to:
+if (this.buff.length > 0) {
+    this.buff = Buffer.concat([
+        this.buff,
+        chunk
+    ]);
+} else {
+    this.buff = chunk;
+}
+
+Suppose your buffer initially contains:
+GET /hea
+
+The next TCP chunk contains:
+lth HTTP/1.1\r\nHost: localhost\r\n\r\n
+
+The resulting buffer becomes:
+GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n
+
+Now the parser may have enough bytes to identify the complete header section.
+
+Why use Buffer.concat()?
+A Buffer has a fixed length.
+
+You cannot simply extend the existing buffer in place.
+
+Buffer.concat() creates a new buffer containing the bytes from the supplied buffers in order.
+The original buffer and the new chunk are combined into one continuous byte sequence.
+Why reuse the chunk when the buffer is empty?
+: chunk;
+
+If no bytes are buffered, concatenating an empty buffer with the incoming chunk would be unnecessary.
+
+The optimization avoids that operation.
+
+A performance consideration
+Repeatedly concatenating large buffers can cause additional memory allocation and byte copying.
+For example, if a client sends a large body in many small chunks, repeated concatenation may become expensive.
+For a learning project, this approach is easy to understand. For a high-throughput server, you would want to benchmark it 
+and consider a more efficient buffering strategy.
+You would also want to ensure that a client cannot force unlimited buffer growth.
+
+  8.3 Decide whether to process the bytes
+if (
+    this.state === "HEAD" ||
+    this.state === "BODY"
+) {
+    this.pump();
+}
+
+This says:
+If the connection is currently reading headers or a body, attempt to make progress.
+
+The connection does not assume that receiving a chunk means receiving a complete request.
+
+Instead, it hands control to pump(), which examines the accumulated buffer and current state.
+
+For example:
+onData(chunk)
+     |
+     v
+Append chunk
+     |
+     v
+Current state = HEAD
+     |
+     v
+pump()
+     |
+     v
+Look for complete headers
+     |
+     +---- Incomplete ----> Wait for more data
+     |
+     +---- Complete ------> Parse headers
+
+The next chunk triggers onData() again, and the process continues.
+
+8.4 What happens when the connection is BUSY?
+Your code does not call pump() while the connection is in the BUSY state.
+
+Instead, incoming bytes are buffered.
+
+For example, a client may send two requests on one persistent connection:
+Request 1 bytes
+Request 2 bytes
+
+If the first request is being processed asynchronously, bytes for the second request might arrive before the first response is complete.
+
+Your code can retain those bytes in this.buff until the connection is ready to process another request.
+
+This is one of the reasons a per-connection buffer is useful.
+
+However, buffering bytes is not the same as implementing safe HTTP pipelining. Your response logic must preserve HTTP/1.1 response ordering, 
+  and your buffer limits must be enforced in every state where bytes can accumulate.
+
+8.5 The buffer-size check
+else if (
+    this.buff.length >
+    this.opts.maxHeaderBytes +
+    this.opts.maxBodyBytes
+) {
+    this.socket.destroy();
+}
+
+This branch runs when the state is neither HEAD nor BODY, which normally means BUSY or CLOSED. The initial guard already returns for CLOSED.
+
+The check limits the size of buffered data while the connection is not actively parsing the request.
+
+Why use a combined limit?
+
+You may be attempting to account for:
+- Bytes belonging to request headers.
+- Bytes belonging to request bodies.
+- Bytes for requests that have arrived while the handler is busy.
+However, this is a coarse limit, not a complete resource policy.
+
+A more robust implementation would reason about header and body limits separately, and about how much pipelined data is allowed while a response is in progress.
+Important: your onData() method only performs this combined size check in the BUSY branch. The HEAD and BODY branches call pump() instead. Therefore, this particular check is not a universal cap on the connection's buffer size.
+The parser and body reader must enforce their respective limits correctly.
+
+
+
+9.1 The HEAD state
+if (this.state === "HEAD") {
+    if (this.buff.length === 0) return;
+
+If the buffer is empty, there are no bytes available to parse.
+
+The method returns and waits for the next data event.
+
+This is important because a TCP connection is asynchronous.
+
+Your code must not block while waiting for more network data.
+
+It should return control to Node.js and allow the event loop to process other work.
+Example
+pump() runs
+    |
+    v
+Buffer is empty
+    |
+    v
+Return
+    |
+    v
+Event loop handles other connections
+    |
+    v
+New TCP data arrives
+    |
+    v
+onData() runs
+    |
+    v
+pump() runs again
+
+This event-driven approach allows one Node.js process to manage many network connections without creating one thread per connection.
+
+//
+
+9.2 Arm the header timeout
+if (!this.headerTimerArmed) {
+    this.setTimer(this.opts.headerTimeoutMs);
+    this.headerTimerArmed = true;
+}
+
+This ensures that a timeout is started when the connection begins processing a request's headers.
+
+The flag prevents the same phase from restarting the timer each time more data arrives.
+
+Consider:
+t = 0 seconds
+First header bytes arrive
+Start header timeout
+
+t = 3 seconds
+More header bytes arrive
+Do not restart timeout
+
+t = 7 seconds
+More header bytes arrive
+Do not restart timeout
+
+t = 10 seconds
+Header timeout expires
+
+With a 10-second timeout, the client does not get an unlimited amount of time merely by sending a tiny fragment every few seconds.
+This helps protect the server against slow-header attacks and resource exhaustion.
+The exact security properties depend on the timeout policy and how the rest of the server enforces resource limits.
+
+//
+
+9.3 Locate the end of the headers
+Your code contains:
+const end = this.buff.indexOf('\r\n\r\n');
+
+The HTTP/1.x header section ends with a blank line.
+
+The sequence:
+\r\n\r\n
+
+represents the end of the headers.
+
+For example:
+GET /health HTTP/1.1\r\n
+Host: localhost\r\n
+Accept: */*\r\n
+\r\n
+
+The final four bytes identify the boundary between the headers and the message body.
+
+indexOf() returns the starting index of the first occurrence of the searched sequence.
+
+If the delimiter is not found, it returns -1.
+
+That behavior matters because your code currently checks the wrong condition.
+
+Your current code is:
+if (end === 1) {
+    if (this.buff.length > this.opts.maxHeaderBytes) {
+        return this.fail(431, "Header Too large");
+    }
+
+    return;
+}
+
+This is a bug. It should almost certainly check end === -1, not end === 1.
+
+When the delimiter is absent, indexOf() returns -1.
+
+A delimiter found at index 1 would mean the buffer contains the header terminator beginning at the second byte, which is not the normal condition for an incomplete request.
+
+The intended logic is approximately:
+const end = this.buff.indexOf('\r\n\r\n');
+
+if (end === -1) {
+    if (this.buff.length > this.opts.maxHeaderBytes) {
+        return this.fail(431, "Header Too Large");
+    }
+
+    return;
+}
+
+This means:
+1. If no header terminator exists, the header section is incomplete.
+2. If the incomplete header buffer exceeds the limit, reject it.
+3. Otherwise, wait for more bytes.
+Without this correction, incomplete headers can be passed to the parser incorrectly.
