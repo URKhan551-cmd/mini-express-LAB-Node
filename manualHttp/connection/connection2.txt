@@ -351,3 +351,99 @@ This means:
 2. If the incomplete header buffer exceeds the limit, reject it.
 3. Otherwise, wait for more bytes.
 Without this correction, incomplete headers can be passed to the parser incorrectly.
+
+
+9.4 Check the header-size limit
+Your next condition is:
+if (end > this.opts.maxHeaderBytes) {
+    return this.fail(431, "Header Too Large");
+}
+
+This checks whether the header terminator occurs beyond the configured limit.
+
+For example:
+maxHeaderBytes = 16384
+
+Header terminator index = 8000
+Result: Within the configured boundary
+
+Header terminator index = 20000
+Result: Reject the request
+
+A 431 Request Header Fields Too Large response indicates that the server is refusing to process headers that exceed its configured limit.
+
+There is a subtle implementation detail: end is the index where the terminator begins, so it measures the number of bytes preceding the terminator, not the total number of bytes including the terminator.
+
+You should define exactly what maxHeaderBytes means and enforce that definition consistently.
+
+//
+
+9.5 Parse the headers
+try {
+    this.req = parseHead.call(
+        this,
+        this.buff.subarray(0, end)
+    );
+} catch (e) {
+    return this.fail(
+        e.status || 400,
+        e.message
+    );
+}
+
+Once the delimiter has been found and the size is acceptable, the connection can parse the header section.
+
+return this.fail(e.status || 400, e.message);
+
+If the error supplies a status code, your code uses it.
+
+Otherwise, it defaults to 400 Bad Request.
+
+This is useful for distinguishing known protocol errors from unexpected exceptions.
+
+Let's break down the expression:
+this.buff.subarray(0, end)
+
+Suppose the buffer contains:
+GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n
+
+If the terminator begins at byte 39, then:
+this.buff.subarray(0, 39)
+
+returns the bytes before the delimiter.
+
+The parser receives the request line and header fields without the terminating blank line.
+
+It can then interpret the bytes as HTTP data.
+Why use parseHead.call(this, ...)?
+This is an important JavaScript detail.
+
+The call() method invokes a function with a specified this value.
+
+Therefore:
+parseHead.call(this, buffer);
+
+invokes parseHead with the current Connection instance as its this value.
+
+This may be necessary if your parser accesses properties such as:
+this.opts
+
+or:
+this.buff
+
+However, we cannot confirm the parser's actual dependency on this without seeing its implementation.
+
+If parseHead only needs the buffer and configuration, explicitly passing those arguments may make the module easier to test and understand.
+Why use try...catch?
+Parsing untrusted network input can fail.
+
+For example, the client might send:
+INVALID REQUEST
+
+Or:
+GET /health HTTP/1.1
+Content-Length: -5
+
+Whether these particular examples are rejected, and which status is returned, depends on your parser's validation rules.
+
+The exception handler allows the connection to turn parsing failures into HTTP errors instead of letting them escape from pump().
