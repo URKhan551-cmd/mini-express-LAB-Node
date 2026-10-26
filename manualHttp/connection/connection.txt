@@ -6,3 +6,59 @@ into HTTP requests, executing those requests, and returning HTTP responses over 
 You are not simply writing a class that contains methods. You are implementing part of the machinery that a real HTTP server 
 needs to handle incoming clients, incomplete requests, timeouts, persistent connections, and errors. 
 Let's break it down from the architecture to the internal mechanics of every method.
+
+                   BROWSER / CLIENT
+                           |
+                           | HTTP request bytes
+                           v
+                    TCP SOCKET
+                           |
+                           v
+                 +-------------------+
+                 |   Connection      |
+                 |                   |
+                 | 1. Receive bytes  |
+                 | 2. Buffer data    |
+                 | 3. Track state    |
+                 | 4. Manage timers  |
+                 | 5. Read request   |
+                 | 6. Dispatch       |
+                 | 7. Handle errors  |
+                 | 8. Manage closing |
+                 +-------------------+
+                     |           |
+                     v           v
+                parse-head    read-body
+                     |           |
+                     +-----+-----+
+                           |
+                           v
+                    HTTP Request
+                           |
+                           v
+                    server.handler()
+                           |
+                           v
+                    HTTP Response
+                           |
+                           v
+                    response module
+                           |
+                           v
+                     TCP SOCKET
+                           |
+                           v
+                    BROWSER / CLIENT
+
+
+A state machine is a system that has a defined set of states and changes from one state to another when particular events occur.
+
+Your code uses these states:
+State	Meaning
+HEAD	Waiting for or parsing HTTP request headers
+BODY	Reading the current request body
+BUSY	Application handling is in progress
+CLOSED	The connection is no longer accepting normal request processing
+
+
+The intended lifecycle is approximately:
