@@ -406,3 +406,315 @@ if (!this.headerTimerArmed) {
 This prevents each incoming chunk from restarting the header timeout.
 
 That distinction matters when a client sends a request extremely slowly.
+
+
+**************
+
+4.11 Initialize the close-after-response flag
+this.closeAfterResponse = false;
+
+This flag indicates that the connection should close after the current response rather than continuing to accept another request.
+
+You use it in:
+onPeerFin()
+
+and:
+drain()
+
+For example, a client might finish sending data while your server is still processing the request.
+Rather than necessarily destroying the socket immediately, your connection can remember that it should close after responding.
+The response implementation must actually honor this flag for the intended behavior to work.
+
+
+*******
+
+4.12 Disable Nagle's algorithm
+socket.setNoDelay(true);
+
+TCP's Nagle algorithm can combine small outgoing writes to reduce the number of small packets.
+Disabling it allows small writes to be sent without waiting for that algorithm to coalesce them.
+This can reduce latency for request/response protocols that send small amounts of data.
+However, it is not automatically faster in every situation. The effect depends on traffic patterns and network conditions.
+Your code chooses lower latency for small writes over the potential packet-efficiency benefits of Nagle's algorithm.
+
+******
+
+4.13 Register socket event listeners
+socket.on('data', (chunk) => this.onData(chunk));
+socket.on('end', () => this.onPeerFin());
+socket.on('error', () => socket.destroy());
+socket.on("close", () => this.onClose());
+
+This connects the socket's lifecycle to your connection object's lifecycle.
+The data event
+socket.on('data', (chunk) => this.onData(chunk));
+
+Whenever Node.js emits incoming socket data, the callback passes the chunk to your connection.
+
+For example:
+Socket receives bytes
+        |
+        v
+'data' event
+        |
+        v
+onData(chunk)
+        |
+        v
+Append bytes to buffer
+        |
+        v
+pump()
+
+The connection does not need a separate external function to be called every time data arrives.
+
+It reacts to the socket event.
+The end event
+socket.on('end', () => this.onPeerFin());
+
+This event indicates that the remote peer has finished sending data on its writable side of the TCP connection.
+
+It does not necessarily mean that all previously written data has disappeared or that the socket's close event has already occurred.
+
+Your onPeerFin() method decides what this means for the connection's HTTP lifecycle.
+The error event
+socket.on('error', () => socket.destroy());
+
+This handles socket errors by destroying the socket.
+
+Without an appropriate error listener, an emitted socket error can cause an unhandled error event and terminate the Node.js process.
+
+Your listener prevents that particular failure mode by explicitly handling the event.
+
+However, the current implementation discards the error details.
+
+For debugging, you would usually want to log the error or classify it appropriately:
+socket.on("error", (err) => {
+    console.error(
+        `Connection ${this.id} socket error:`,
+        err.message
+    );
+
+    socket.destroy();
+});
+
+In production, avoid logging sensitive request data or other confidential information.
+The close event
+socket.on("close", () => this.onClose());
+
+This lets your connection perform cleanup after the socket closes.
+
+For example:
+this.clearTimer();
+this.server.connections.delete(this);
+
+This is important because the server needs to stop tracking connections that no longer exist.
+
+***********
+
+4.14 Start the keep-alive timeout
+this.setTimer(this.opts.keepAliveTimeoutMs);
+
+A connection may remain open after a response so that the client can reuse it.
+
+But what if the client never sends another request?
+
+Without a timeout, the server may retain idle sockets and their associated resources for too long.
+
+The initial timer sets a limit on how long the connection can remain idle.
+
+Your onTimeout() method determines what happens when the timer expires.
+Constructor summary
+The constructor does five fundamental jobs:
+1. Assigns the socket and server dependencies.
+2. Initializes all per-connection state.
+3. Establishes the connection's event listeners.
+4. Configures the socket's behavior.
+5. Starts the initial timeout.
+The constructor does not parse a request or execute application logic. It prepares the object to handle those operations when the corresponding events occur.
+
+************
+
+5. Timer management: setTimer() and clearTimer()
+Your timer methods are small, but they control an important part of network resource management.
+5.1 setTimer(ms)
+setTimer(ms) {
+    clearTimeout(this.timer);
+
+    this.timer = setTimeout(
+        () => this.onTimeout(),
+        ms
+    );
+}
+
+Let's examine the mechanism.
+
+Suppose the connection is waiting for request headers and needs a 10-second timeout.
+
+You call:
+this.setTimer(10000);
+
+The following happens:
+1. Any previously scheduled timeout is cancelled.
+2. A new timeout is scheduled.
+3. After approximately 10 seconds, Node.js runs the callback if the timeout has not been cancelled.
+4. The callback invokes this.onTimeout().
+Conceptually:
+setTimer(10000)
+       |
+       v
+Cancel previous timer
+       |
+       v
+Create a new timer
+       |
+       v
+Wait for approximately 10 seconds
+       |
+       v
+onTimeout()
+
+Why cancel the previous timer first?
+
+Because the connection has only one this.timer reference.
+
+You do not want an older timeout to remain active after the connection has moved to a new processing phase.
+
+For example:
+HEAD timeout
+     |
+     v
+Headers completed
+     |
+     v
+Cancel HEAD timeout
+     |
+     v
+Start BODY timeout
+
+There is a subtlety here: JavaScript timers are not precise deadlines. Their callbacks can run later than scheduled, depending on event-loop activity.
+Also, clearTimeout(null) is harmless, so the method works when no timer is currently active.
+
+********
+5.2 clearTimer()
+clearTimer() {
+    clearTimeout(this.timer);
+    this.timer = null;
+}
+
+This cancels the currently scheduled timeout and resets the reference.
+
+Why set the property to null after clearing it?
+
+Because the object's state now accurately represents the fact that no timer is currently registered in this.timer.
+
+For example, after successfully parsing the headers:
+this.clearTimer();
+
+The connection should no longer be subject to the header timeout.
+
+Later, if it needs a body timeout, it can start another timer.
+Important design detail
+Your implementation uses one timer for multiple purposes rather than separate timer objects for headers, bodies, and keep-alive.
+
+That is a reasonable design for a small connection state machine, provided that every state transition correctly clears, resets, and rearms the timer.
+
+The Boolean flags are necessary because the timer reference alone does not tell you which phase initiated the current timeout.
+
+********
+
+6. onTimeout(): What happens when a client takes too long?
+Your method:
+onTimeout() {
+    if (this.state === "HEAD" && this.buff.length === 0) {
+        this.state = "CLOSED";
+        this.socket.destroySoon();
+    } else if (
+        this.state === "HEAD" ||
+        this.state === "BODY"
+    ) {
+        this.fail(408, "Request Timeout");
+    }
+}
+
+This method distinguishes between two situations.
+Situation A: The connection is idle
+if (this.state === "HEAD" && this.buff.length === 0)
+
+Both conditions must be true:
+- The connection is in the header-reading state.
+- Its buffer is empty.
+That means the server is waiting for a new request and has not received any bytes for it.
+
+Example:
+Browser requests /health
+Server responds 200 OK
+
+Connection remains open
+Buffer = empty
+State = HEAD
+
+Client sends nothing for too long
+Keep-alive timeout expires
+
+The server can close the idle connection without generating a 408 response.
+this.state = "CLOSED";
+this.socket.destroySoon();
+
+The state is changed first, preventing subsequent processing from treating the connection as open.
+
+destroySoon() is intended to end the socket and destroy it after pending writes have been flushed.
+
+Since this branch is closing an idle connection, there should not normally be a pending HTTP response.
+Situation B: A request is incomplete
+else if (
+    this.state === "HEAD" ||
+    this.state === "BODY"
+)
+
+The connection is actively reading a request, but the client has not completed it before the timeout.
+
+Examples:
+
+Incomplete headers:
+GET /api/weather HTTP/1.1
+Host: localhost
+X-Custom-Header:
+
+The client has started sending a header but has not completed the header section.
+
+Incomplete body:
+POST /api/users HTTP/1.1
+Host: localhost
+Content-Length: 100
+
+{"name":"Umair"
+
+Suppose the request declares a 100-byte body but the client stops sending bytes before the body is complete.
+
+Your connection eventually calls:
+this.fail(408, "Request Timeout");
+
+That method attempts to send an HTTP timeout response and close the connection.
+
+Why not use one timeout for everything?
+Because idle waiting and incomplete requests are different conditions.
+
+An idle keep-alive connection is not necessarily doing anything wrong. It is waiting for the next request.
+
+An incomplete request, however, is consuming resources while the server waits for the client to finish sending the message.
+
+Different timeouts let you treat these situations differently.
+A limitation to understand
+Your onTimeout() method has no explicit action for the BUSY state.
+
+For example, if:
+this.state === "BUSY"
+
+when the timer callback executes, neither branch runs.
+
+Whether that can happen in practice depends on how your respond implementation manages timers.
+
+You should not assume that this timer imposes an application-handler execution deadline. It does not currently do so.
+
+If you want to prevent application handlers from running indefinitely, that requires a separate application timeout strategy, potentially involving cancellation or an AbortSignal.
