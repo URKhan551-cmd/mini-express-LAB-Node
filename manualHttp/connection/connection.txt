@@ -106,8 +106,303 @@ Request 3:
     Response 3: 404 Not Found
 
 These requests can use the same TCP connection when keep-alive is permitted and the connection remains open.
-
 Your served counter tracks how many requests have been dispatched through that particular connection.
-
 This state machine is the foundation for understanding every method below.
 
+constructor()  is used to create an instance of connection {}  like this where i do have socket and the server where the connection 
+is going to build 
+
+const net = require("node:net"); 
+const server = net.createServer((socket) => {
+  const connection = new Connection(socket, myServer);          myServer is the main server where the connection will be built
+  myServer.connections.add(connection);    this will add this new connection to myServer to request handling
+});
+
+****
+What is a constructor?
+A constructor is a special method that JavaScript executes when you create an instance using new.
+
+For example:
+const connection = new Connection(socket, server);
+
+JavaScript creates a new object and invokes the constructor with two arguments:
+socket
+server
+
+The constructor initializes the object's state and establishes its relationship with the TCP socket.
+Think of it as the initialization phase of a connection.
+
+Before this constructor runs, the new connection object does not yet have the properties your methods expect.
+
+After initialization, it has the references, buffers, state variables, and event listeners required to manage the connection.
+
+Why accept socket and server?
+constructor(socket, server)
+These arguments represent two different responsibilities.
+socket represents the individual network connection.
+
+It provides access to the underlying TCP communication channel.
+
+Your class uses it to:
+- Receive data.
+- Write HTTP responses.
+- Detect when the client finishes sending data.
+- Detect socket errors.
+- Close the connection.
+server represents the broader server application.
+Your class uses it to:
+- Access server configuration.
+- Execute the request handler.
+- Participate in connection tracking and server shutdown.
+This is an example of dependency injection: the connection receives the objects it needs rather than creating its own server or TCP socket.
+
+That makes the class reusable across different requests and server configurations.
+*****
+Generating a connection ID
+this.id = nextConnectId++;
+
+You declared:
+let nextConnectId = 1;
+
+The expression:
+nextConnectId++
+returns the current value and then increments the variable.
+
+// First connection
+this.id = 1;
+nextConnectId = 2;
+
+// Second connection
+this.id = 2;
+nextConnectId = 3;
+
+// Third connection
+this.id = 3;
+nextConnectId = 4;
+
+Why do this?
+
+Suppose your server receives requests from many clients. You need a way to 
+distinguish which connection produced a particular log message.
+You can write:
+console.log(
+    `Connection ${this.id} received incoming data`
+);
+
+Example output:
+Connection 1 received incoming data
+Connection 2 received incoming data
+Connection 1 received another request
+Connection 3 received incoming data
+
+This becomes useful when debugging:
+- Slow connections.
+- Unexpected disconnects.
+- Requests that time out.
+- Multiple requests on the same TCP connection.
+- Client behavior during load testing.
+One limitation: this counter is unique only within the lifetime of the current Node.js process. It is not a globally unique identifier across multiple server processes.
+
+
+
+**********
+4.3 Store the socket
+this.socket = socket;
+
+This saves the socket reference on the instance.
+
+Without this assignment, other methods would not be able to access the socket through this.socket.
+
+For example:
+this.socket.write("HTTP/1.1 200 OK\r\n\r\nHello");
+
+this.socket.write("HTTP/1.1 200 OK\r\n\r\nHello");
+
+Or:
+this.socket.destroy();
+
+You could pass the socket into every method individually, but that would be unnecessary because every method belongs to the same connection.
+Storing it once establishes ownership of the socket reference for the lifetime of the object.
+
+**************
+4.4 Store the server
+this.server = server;
+
+This allows the connection to access shared server-level functionality.
+
+Later, you use:
+res = await this.server.handler(req);
+
+The connection itself does not need to know whether the application is serving weather data, authentication requests, or user profiles.
+It only needs to know how to invoke the server's handler.
+This is a separation between transport-level processing and application-level behavior.
+
+***********
+4.5 Store configuration
+this.opts = server.opts;
+
+Your connection needs configuration values such as:
+this.opts.keepAliveTimeoutMs
+this.opts.headerTimeoutMs
+this.opts.bodyTimeoutMs
+this.opts.maxHeaderBytes
+this.opts.maxBodyBytes
+
+These settings determine how long the server waits and how much request data it permits.
+Your connection can now use these settings without hardcoding them into every method.
+
+One design consideration: this.opts references the same object as server.opts; it does not create a copy. If the server mutates that object, the connection sees those changes.
+
+******************
+
+4.6 Initialize the byte buffer
+this.buff = Buffer.alloc(0);
+
+This is one of the most important lines in the constructor.
+
+A TCP socket gives your application byte sequences, represented in Node.js by Buffer objects.
+
+Your parser cannot assume that each incoming chunk represents a complete request.
+
+Consider this incoming request:
+GET /health HTTP/1.1
+Host: localhost
+
+The client might send the terminating \r\n\r\n in a later chunk.
+
+Your connection needs somewhere to store the bytes until it has enough data to parse the headers.
+
+That storage is:
+this.buff
+
+Initially:
+this.buff = Buffer.alloc(0);
+The buffer has zero bytes.
+
+When data arrives, onData() adds the new chunk to it.
+The buffer therefore represents bytes received but not yet fully consumed by the connection's processing logic.
+This is a key distinction: your buffer is not necessarily just the current request. It may also contain bytes belonging to subsequent requests.
+
+***************
+
+4.7 Initialize the state
+this.state = "HEAD";
+
+A newly accepted connection begins by waiting for an HTTP request.
+
+The first normal processing phase is therefore HEAD.
+
+Your pump() method uses this state to determine which operation to perform.
+
+For example:
+if (this.state === "HEAD") {
+    // Parse request headers.
+}
+
+Later:
+this.state = "BODY";
+
+And after the request is ready:
+this.state = "BUSY";
+
+The state variable prevents the connection from treating every incoming byte as if it belonged to the same processing phase.
+
+************
+
+4.8 Initialize the current request
+this.req = null;
+
+Initially, the connection has no parsed HTTP request.
+
+Once the headers have been parsed, you assign the resulting request object:
+this.req = parseHead.call(
+    this,
+    this.buff.subarray(0, end)
+);
+
+The req property then holds information about the request being processed.
+
+Depending on your parser's implementation, this may include:
+{
+    method: "GET",
+    target: "/health",
+    version: "HTTP/1.1",
+    headers: {
+        host: "localhost"
+    }
+}
+
+This is an illustrative shape; your actual parser determines the request object's structure.
+
+Why use null initially?
+
+Because it clearly represents the absence of a parsed request.
+The distinction is useful:
+this.req === null
+means no current parsed request is stored, while:
+this.req !== null
+means the connection has a request object available.
+
+*******
+
+4.9 Count requests on a connection
+this.served = 0;
+
+This counter tracks how many requests have reached your dispatch stage.
+
+Inside dispatch():
+this.served++;
+
+Then:
+req.connId = this.id;
+req.nthOnConnection = this.served;
+
+Suppose a browser reuses the same TCP connection:
+Connection ID: 7
+
+Request 1:
+    connId = 7
+    nthOnConnection = 1
+
+Request 2:
+    connId = 7
+    nthOnConnection = 2
+
+Request 3:
+    connId = 7
+    nthOnConnection = 3
+
+This can help with diagnostics and testing HTTP keep-alive behavior.
+Note that served counts requests dispatched, not necessarily requests that successfully returned a response.
+
+*********
+4.10 Initialize timer state
+this.timer = null;
+this.headerTimerArmed = false;
+this.bodyTimerArmed = false;
+
+The timer reference stores the currently active timeout.
+
+The two Boolean flags indicate whether the header or body timeout has been armed.
+
+Why separate flags?
+
+Because the connection uses one timer reference for several different waiting periods:
+1. Waiting for the next request on an idle keep-alive connection.
+2. Waiting for the request headers.
+3. Waiting for the request body.
+The timer reference answers:
+Which timeout is currently scheduled?
+
+The flags answer:
+Have we already started the timeout for this processing phase?
+
+For example:
+if (!this.headerTimerArmed) {
+    this.setTimer(this.opts.headerTimeoutMs);
+    this.headerTimerArmed = true;
+}
+
+This prevents each incoming chunk from restarting the header timeout.
+
+That distinction matters when a client sends a request extremely slowly.
