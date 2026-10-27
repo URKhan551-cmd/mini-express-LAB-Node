@@ -555,3 +555,64 @@ Your current code starts the timer once and does not restart it for every incomi
 That implements a deadline-like timeout for the body-reading phase rather than a simple inactivity timeout.
 
 This can be a useful defense against clients that send tiny amounts of data slowly.
+
+//
+
+11. dispatch(): Handing the request to the application
+
+This method connects your HTTP implementation to your actual application.
+
+Let's examine the sequence.
+11.1 Enter BUSY
+this.state = "BUSY";
+The request has been completely read and is now being processed.
+
+The connection should not begin processing another request as if it were an independent request until the current request's response lifecycle has been handled.
+
+The BUSY state is also important because your onData() method behaves differently while the handler is running.
+
+
+
+
+
+//
+last 
+
+1. Separation of concerns
+The connection manager does not need to implement every detail of HTTP parsing or response serialization itself.
+
+Instead:
+Connection lifecycle
+       |
+       +----> Header parser
+       |
+       +----> Body reader
+       |
+       +----> Application handler
+       |
+       +----> Response writer
+Each module has a more focused responsibility.
+2. Incremental processing
+The connection does not require a complete request to arrive in one TCP chunk.
+
+It accumulates bytes and processes them as sufficient information becomes available.
+
+This is the same general principle used in streaming parsers and network protocols.
+3. Explicit state management
+The connection's state makes the current phase visible.
+
+That helps prevent the same incoming bytes from being processed as headers, body data, and a new request at the same time.
+4. Resource management
+Buffers, timers, and sockets consume resources.
+
+The connection class manages their lifetimes and decides when they should be released.
+5. Asynchronous execution
+The application handler can perform asynchronous operations without blocking the entire Node.js event loop.
+
+Other connections can continue to receive data and execute callbacks while one handler awaits a result.
+6. Protocol boundaries
+Your connection class separates raw TCP transport from HTTP message interpretation.
+
+That is important because TCP knows nothing about HTTP requests, paths, headers, or status codes.
+
+Your code supplies that missing layer.
