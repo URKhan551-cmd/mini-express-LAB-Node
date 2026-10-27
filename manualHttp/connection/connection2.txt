@@ -447,3 +447,111 @@ Content-Length: -5
 Whether these particular examples are rejected, and which status is returned, depends on your parser's validation rules.
 
 The exception handler allows the connection to turn parsing failures into HTTP errors instead of letting them escape from pump().
+
+//
+
+9.6 Consume the parsed headers
+this.buff = this.buff.subarray(end + 4);
+This is another critical operation.
+
+The connection has now parsed the header section, so those bytes should no longer be treated as unprocessed input.
+
+The expression:
+end + 4
+skips:
+1. All bytes preceding the header terminator.
+2. The four bytes of \r\n\r\n.
+The resulting buffer contains whatever bytes remain after the headers.
+
+That may be:
+- An empty buffer.
+- The beginning of a request body.
+- The complete request body.
+- The request body plus bytes belonging to another request.
+For example, before:
+GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n
+After:
+Empty buffer
+For a request with a body, the remaining bytes are preserved for the body reader.
+
+This is a fundamental property of incremental parsing: consume only the bytes you have successfully processed and retain the rest.
+
+//
+
+9.7 Reset the header timeout and transition to BODY
+this.clearTimer();
+this.headerTimerArmed = false;
+this.state = "BODY";
+The header section has been parsed successfully.
+
+Therefore, the header timeout is no longer needed.
+
+You cancel it and reset the associated flag.
+
+Then you transition the connection into the body-reading state.
+
+Why BODY even for a GET request without a body?
+
+Because your state machine uses BODY as the phase in which it completes request framing, whether that requires consuming body bytes or immediately determining that no body remains.
+
+The readBody() module should determine when the request message is complete according to the protocol rules.
+
+//
+
+9.8 Handle Expect: 100-continue
+if (this.req.expectContinue) {
+    this.socket.write(
+        'HTTP/1.1 100 Continue\r\n\r\n'
+    );
+}
+Some HTTP clients send:
+POST /api/upload HTTP/1.1
+Host: localhost
+Content-Length: 500000
+Expect: 100-continue
+The client is asking the server to indicate whether it should proceed with sending the request body.
+
+If your parser sets:
+this.req.expectContinue
+to true, the connection writes an interim response:
+HTTP/1.1 100 Continue
+
+The client can then proceed with the body.
+
+This is useful for large uploads because the server can reject some requests based on their headers before the client sends the entire body.
+
+However, your code sends 100 Continue immediately after parsing the headers.
+
+That means it is not necessarily making a meaningful authorization or validation decision before accepting the body.
+
+If you want to avoid unnecessary uploads, you may need to validate the method, target, authentication, and declared body size before sending this response.
+
+//
+
+10. Reading the request body
+After processing the headers, pump() reaches:
+
+The readBody module is responsible for determining whether the current request body has been completely received.
+
+The exact implementation is not included in your snippet, so we need to distinguish the contract expected by this code from the internal body-reading algorithm.
+
+Your caller expects:
+- A falsy result if the body is incomplete.
+- A truthy result if the request is ready to dispatch.
+- An exception if body parsing fails.
+
+
+10.3 Why is the body timeout important?
+Suppose your server accepts a request that declares a 10 MB body.
+
+The client sends 1 KB and then stops transmitting.
+
+Without a timeout, the connection may wait indefinitely, retaining memory and other resources.
+
+The body timeout limits that waiting period.
+
+Your current code starts the timer once and does not restart it for every incoming chunk.
+
+That implements a deadline-like timeout for the body-reading phase rather than a simple inactivity timeout.
+
+This can be a useful defense against clients that send tiny amounts of data slowly.
