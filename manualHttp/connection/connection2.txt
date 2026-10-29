@@ -616,3 +616,34 @@ Your connection class separates raw TCP transport from HTTP message interpretati
 That is important because TCP knows nothing about HTTP requests, paths, headers, or status codes.
 
 Your code supplies that missing layer.
+
+
+
+
+Think of the Connection class as the manager of one conversation between a client and your server.
+
+The constructor establishes the conversation's initial state.
+
+onData() receives and stores incoming bytes.
+
+pump() decides whether enough data exists to advance the HTTP parsing process.
+
+parseHead() interprets the request line and headers.
+
+readBody() determines when the message body is complete.
+
+dispatch() transfers the completed request to the application.
+
+respond() delegates the response-writing operation.
+
+fail() handles errors that require the connection to stop normal processing.
+
+onTimeout() enforces waiting limits.
+
+onPeerFin() handles the client finishing its sending side.
+
+onClose() releases connection-tracking resources.
+
+drain() participates in graceful server shutdown.
+
+The key insight is that the class is not primarily about HTTP endpoints. It is about managing time, bytes, state, and resource ownership across the lifecycle of one TCP connection.
